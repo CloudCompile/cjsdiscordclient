@@ -2,6 +2,7 @@
   "name": "cjsdiscordclient-frontend",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -12,7 +13,7 @@
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.2.1",
-    "vite": "^5.0.12"
+    "@vitejs/plugin-react": "^5.1.4",
+    "vite": "^6.3.7"
   }
 }
