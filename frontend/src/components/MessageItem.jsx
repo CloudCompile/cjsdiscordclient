@@ -5,7 +5,7 @@ import { memo } from 'react';
  * `isFirst` controls whether the author avatar + name are shown (grouped style).
  */
 const MessageItem = memo(function MessageItem({ message, isFirst }) {
-  const { author, content, timestamp, editedTimestamp, attachments, embeds } = message;
+  const { author, content, timestamp, editedTimestamp, attachments, embeds, mentions } = message;
 
   const time = new Date(timestamp).toLocaleTimeString([], {
     hour: '2-digit',
@@ -51,7 +51,7 @@ const MessageItem = memo(function MessageItem({ message, isFirst }) {
 
         {content && (
           <p className="message-text">
-            <MessageContent text={content} />
+            <MessageContent text={content} mentions={mentions} />
           </p>
         )}
 
@@ -77,6 +77,7 @@ export default MessageItem;
 
 function Attachment({ attachment }) {
   const isImage = attachment.contentType?.startsWith('image/');
+  const isVideo = attachment.contentType?.startsWith('video/');
 
   if (isImage) {
     return (
@@ -86,6 +87,21 @@ function Attachment({ attachment }) {
           alt={attachment.name}
           loading="lazy"
           className="attachment-img"
+        />
+      </div>
+    );
+  }
+
+  if (isVideo) {
+    return (
+      <div className="attachment video-attachment">
+        <video
+          src={attachment.url}
+          className="attachment-video"
+          controls
+          muted
+          loop
+          playsInline
         />
       </div>
     );
@@ -112,12 +128,41 @@ function Attachment({ attachment }) {
 }
 
 function Embed({ embed }) {
-  if (!embed.title && !embed.description) return null;
+  // GIF / video embed (Tenor, Giphy, etc.)
+  if (embed.type === 'gifv' && embed.video) {
+    return (
+      <div className="attachment video-attachment">
+        <video
+          src={embed.video}
+          className="attachment-video"
+          autoPlay
+          muted
+          loop
+          playsInline
+        />
+      </div>
+    );
+  }
+
+  if (!embed.title && !embed.description && !embed.image && !embed.author) return null;
+
   return (
     <div
       className="embed"
       style={embed.color ? { borderLeftColor: `#${embed.color.toString(16).padStart(6, '0')}` } : {}}
     >
+      {embed.author && (
+        <div className="embed-author">
+          {embed.author.iconURL && (
+            <img src={embed.author.iconURL} alt="" className="embed-author-icon" loading="lazy" />
+          )}
+          {embed.author.url ? (
+            <a href={embed.author.url} target="_blank" rel="noreferrer">{embed.author.name}</a>
+          ) : (
+            embed.author.name
+          )}
+        </div>
+      )}
       {embed.thumbnail && (
         <img src={embed.thumbnail} alt="" className="embed-thumbnail" loading="lazy" />
       )}
@@ -133,42 +178,160 @@ function Embed({ embed }) {
       {embed.description && (
         <p className="embed-description">{embed.description}</p>
       )}
+      {embed.fields?.length > 0 && (
+        <div className="embed-fields">
+          {embed.fields.map((f, i) => (
+            <div key={i} className={`embed-field${f.inline ? ' inline' : ''}`}>
+              <p className="embed-field-name">{f.name}</p>
+              <p className="embed-field-value">{f.value}</p>
+            </div>
+          ))}
+        </div>
+      )}
       {embed.image && (
         <img src={embed.image} alt="" className="embed-image" loading="lazy" />
+      )}
+      {embed.footer && (
+        <div className="embed-footer">
+          {embed.footer.iconURL && (
+            <img src={embed.footer.iconURL} alt="" className="embed-footer-icon" loading="lazy" />
+          )}
+          <span>{embed.footer.text}</span>
+        </div>
       )}
     </div>
   );
 }
 
-/** Minimal Discord markdown renderer (no DOMPurify needed – text only, no HTML) */
-function MessageContent({ text }) {
-  // Split text into segments: code blocks, inline code, bold, italic, etc.
-  const lines = text.split('\n');
+/** Discord-style markdown renderer */
+function MessageContent({ text, mentions }) {
+  const blocks = parseTopLevel(text);
   return (
     <>
-      {lines.map((line, i) => (
-        <span key={i}>
-          {renderInline(line)}
-          {i < lines.length - 1 && <br />}
-        </span>
-      ))}
+      {blocks.map((block, i) => {
+        if (block.type === 'codeblock') {
+          return (
+            <pre key={i} className="code-block">
+              {block.lang && <span className="code-block-lang">{block.lang}</span>}
+              <code>{block.content}</code>
+            </pre>
+          );
+        }
+        if (block.type === 'blockquote') {
+          return (
+            <blockquote key={i} className="message-blockquote">
+              <MessageContent text={block.content} mentions={mentions} />
+            </blockquote>
+          );
+        }
+        // Plain text segment: render line-by-line with inline formatting
+        const lines = block.content.split('\n');
+        return (
+          <span key={i}>
+            {lines.map((line, j) => (
+              <span key={j}>
+                {renderInline(line, mentions)}
+                {j < lines.length - 1 && <br />}
+              </span>
+            ))}
+          </span>
+        );
+      })}
     </>
   );
 }
 
-function renderInline(text) {
-  // Patterns handled: **bold**, *italic*, __underline__, ~~strike~~, `code`, ||spoiler||
+/** Split raw message text into top-level blocks: codeblocks, blockquotes, plain text */
+function parseTopLevel(text) {
+  const blocks = [];
+  const codeBlockRe = /```([^\n`]*)\n?([\s\S]*?)```/g;
+  let last = 0;
+  let m;
+
+  while ((m = codeBlockRe.exec(text)) !== null) {
+    if (m.index > last) {
+      extractBlockquotes(text.slice(last, m.index), blocks);
+    }
+    blocks.push({ type: 'codeblock', lang: m[1].trim(), content: m[2] });
+    last = m.index + m[0].length;
+  }
+
+  if (last < text.length) {
+    extractBlockquotes(text.slice(last), blocks);
+  }
+
+  return blocks.length ? blocks : [{ type: 'text', content: text }];
+}
+
+/** Split a text chunk into blockquote and plain-text blocks */
+function extractBlockquotes(text, blocks) {
+  const lines = text.split('\n');
+  let i = 0;
+  let textLines = [];
+
+  const flushText = () => {
+    if (textLines.length) {
+      blocks.push({ type: 'text', content: textLines.join('\n') });
+      textLines = [];
+    }
+  };
+
+  while (i < lines.length) {
+    if (lines[i].startsWith('> ') || lines[i] === '>') {
+      flushText();
+      const quoteLines = [];
+      while (i < lines.length && (lines[i].startsWith('> ') || lines[i] === '>')) {
+        quoteLines.push(lines[i].slice(lines[i].startsWith('> ') ? 2 : 1));
+        i++;
+      }
+      blocks.push({ type: 'blockquote', content: quoteLines.join('\n') });
+    } else {
+      textLines.push(lines[i]);
+      i++;
+    }
+  }
+
+  flushText();
+}
+
+/** Render a single line with inline markdown, mentions, emoji, and auto-links */
+function renderInline(text, mentions) {
+  const userMap = {};
+  (mentions?.users ?? []).forEach((u) => { userMap[u.id] = u.username; });
+
   const parts = [];
   let remaining = text;
   let key = 0;
 
   const patterns = [
+    // Inline code (no nested formatting inside)
+    { re: /`([^`\n]+)`/, tag: 'code' },
+    // Bold+italic (must precede bold and italic individually)
+    { re: /\*\*\*(.+?)\*\*\*/s, tag: 'bolditalic' },
+    // Bold
     { re: /\*\*(.+?)\*\*/s, tag: 'strong' },
-    { re: /\*(.+?)\*/s, tag: 'em' },
+    // Italic (asterisk) — no newlines in content
+    { re: /\*([^*\n]+)\*/, tag: 'em' },
+    // Underline (must precede single-underscore italic)
     { re: /__(.+?)__/s, tag: 'u' },
+    // Italic (underscore)
+    { re: /_([^_\n]+)_/, tag: 'em' },
+    // Strikethrough
     { re: /~~(.+?)~~/s, tag: 'del' },
-    { re: /`(.+?)`/s, tag: 'code' },
+    // Spoiler
     { re: /\|\|(.+?)\|\|/s, tag: 'spoiler' },
+    // Animated custom emoji  <a:name:id>
+    { re: /<a:(\w+):(\d+)>/, tag: 'animated-emoji' },
+    // Static custom emoji  <:name:id>
+    { re: /<:(\w+):(\d+)>/, tag: 'custom-emoji' },
+    // User mention  <@id> or <@!id>
+    { re: /<@!?(\d+)>/, tag: 'user-mention' },
+    // Channel mention  <#id>
+    { re: /<#(\d+)>/, tag: 'channel-mention' },
+    // Role mention  <@&id>
+    { re: /<@&(\d+)>/, tag: 'role-mention' },
+    // Auto-link URLs
+    { re: /https?:\/\/[^\s<>"]+(?<![.,;:!?)'">`\]])/, tag: 'url' },
   ];
 
   while (remaining.length > 0) {
@@ -194,13 +357,48 @@ function renderInline(text) {
       parts.push(<span key={key++}>{remaining.slice(0, match.index)}</span>);
     }
 
-    if (tag === 'spoiler') {
+    if (tag === 'code') {
+      parts.push(<code key={key++}>{match[1]}</code>);
+    } else if (tag === 'spoiler') {
       parts.push(<SpoilerSpan key={key++} text={match[1]} />);
+    } else if (tag === 'bolditalic') {
+      parts.push(<strong key={key++}><em>{renderInline(match[1], mentions)}</em></strong>);
+    } else if (tag === 'user-mention') {
+      const username = userMap[match[1]] || match[1];
+      parts.push(<span key={key++} className="mention">@{username}</span>);
+    } else if (tag === 'channel-mention') {
+      parts.push(<span key={key++} className="mention">#{match[1]}</span>);
+    } else if (tag === 'role-mention') {
+      parts.push(<span key={key++} className="mention role-mention">@role</span>);
+    } else if (tag === 'animated-emoji') {
+      parts.push(
+        <img
+          key={key++}
+          className="custom-emoji"
+          src={`https://cdn.discordapp.com/emojis/${match[2]}.gif`}
+          alt={`:${match[1]}:`}
+          title={`:${match[1]}:`}
+        />
+      );
+    } else if (tag === 'custom-emoji') {
+      parts.push(
+        <img
+          key={key++}
+          className="custom-emoji"
+          src={`https://cdn.discordapp.com/emojis/${match[2]}.webp`}
+          alt={`:${match[1]}:`}
+          title={`:${match[1]}:`}
+        />
+      );
+    } else if (tag === 'url') {
+      parts.push(
+        <a key={key++} href={match[0]} target="_blank" rel="noreferrer">
+          {match[0]}
+        </a>
+      );
     } else {
       const Tag = tag;
-      parts.push(
-        <Tag key={key++}>{renderInline(match[1])}</Tag>
-      );
+      parts.push(<Tag key={key++}>{renderInline(match[1], mentions)}</Tag>);
     }
 
     remaining = remaining.slice(match.index + match[0].length);
@@ -240,3 +438,4 @@ function formatBytes(bytes) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+
