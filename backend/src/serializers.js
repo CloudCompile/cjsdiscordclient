@@ -32,12 +32,25 @@ function serializeMessage(msg) {
       contentType: a.contentType ?? null,
     })),
     embeds: (msg.embeds ?? []).map((e) => ({
+      type: e.type ?? null,
       title: e.title ?? null,
       description: e.description ?? null,
       url: e.url ?? null,
       color: e.color ?? null,
       image: e.image?.url ?? null,
       thumbnail: e.thumbnail?.url ?? null,
+      video: e.video?.url ?? null,
+      author: e.author
+        ? { name: e.author.name ?? null, iconURL: e.author.iconURL ?? null, url: e.author.url ?? null }
+        : null,
+      footer: e.footer
+        ? { text: e.footer.text ?? null, iconURL: e.footer.iconURL ?? null }
+        : null,
+      fields: (e.fields ?? []).map((f) => ({
+        name: f.name,
+        value: f.value,
+        inline: f.inline ?? false,
+      })),
     })),
     mentions: {
       users: [...(msg.mentions?.users?.values() ?? [])].map((u) => ({
